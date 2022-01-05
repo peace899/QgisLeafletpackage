@@ -262,9 +262,9 @@ function addPreviewIcons() {
 function showFeatureProperties(e) {
     
     layerName = e.target.feature.properties.layerName
-    fid = e.target.feature.properties.fid
+    _fid = e.target.feature.properties.fid
     
-    sql = `select * from [${layerName}] where fid = ${fid}`    
+    sql = `select * from [${layerName}] where fid = ${_fid}`    
     const {geom, fid, ...obj} = db.prepare(sql).getAsObject($)
 
     var stringWidths =  Object.keys(obj).map(x => {
