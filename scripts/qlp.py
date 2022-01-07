@@ -188,11 +188,10 @@ class LeafExport(QThread):
 
     def create_geopackage(self):
         # Save layers to geopackage
+        project_crs = self.project.crs()        
         self.feedback.emit(f'Writing layers to geopackage: {self.gpkg_file}')
         for vl in self.vectorlayers:
-            crs = QgsCoordinateReferenceSystem.fromEpsgId(4326)
-            vl.setCrs(crs)
-            
+            vl.setCrs(project_crs)           
 
         processing.run("native:package",
                     {'LAYERS': self.vectorlayers,
