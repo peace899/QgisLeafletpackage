@@ -1,13 +1,19 @@
+
+var transformedBounds = [];
+
 function getlayersBounds() {
-    db = geoPackage.connection.getDBConnection()    
-    minXY = db.prepare('select min(min_y), min(min_x) from gpkg_contents').getAsObject({$})
-    maxXY = db.prepare('select max(max_y), max(max_x) from gpkg_contents').getAsObject({$})
-    
-    bounds = [Object.values(minXY), Object.values(maxXY)]
+    if (transformedBounds.length > 0) {
+        bounds = transformedBounds[0];
+    } else {
+        minXY = db.prepare('select min(min_y), min(min_x) from gpkg_contents').getAsObject({$})
+        maxXY = db.prepare('select max(max_y), max(max_x) from gpkg_contents').getAsObject({$})
+        bounds = [Object.values(minXY), Object.values(maxXY)]    
+    }
+
     map.fitBounds(bounds)
 }
 
-function addVectorLayer(layerName) {
+function addVectorLayer(layerName) {    
     console.log(`adding ${layerName}`)
     layerObject = findByLabel(layerTree, layerName);
     propKey = layerObject.propKey;
@@ -17,40 +23,18 @@ function addVectorLayer(layerName) {
     if (qmlStyler.fillPatternOptions) {
         qmlStyler.styles = getPatternedStyles(qmlStyler.fillPatternOptions, qmlStyler.styles)
     }
-
-    iter = geoPackage.getFeatureDao(layerName).queryForGeoJSONIndexedFeaturesWithBoundingBox(
-        undefined,
-        true);
-
+    
+    srs_id = db.prepare(`select srs_id from gpkg_contents where table_name = "${layerName}"`).getAsObject({$}).srs_id
+    
+    var geojson = getLayerAsGeoJSON(layerName)
+    if (srs_id !== 4326) {        
+        var geojson = getUnprojectedJSON(geojson, srs_id)
+    }
+   
     if (layerObject.renderType == 'singleSymbol') {
-        var vectorLayer = L.geoJSON(null, 
-            {
-                style: qmlStyler.styles[0],
-                pointToLayer: function(feature, latlng) {
-                    return createPointLayer(latlng, qmlStyler.markerLayerOptions[0])
-                },
-                onEachFeature: function (feature, layer) {
-                    layer.on({
-                        click: showFeatureProperties
-                    });
-                }
-            });
+        var vectorLayer = itemLayer(qmlStyler, 0)
         
-
-        for (const feature of iter) {
-            feature.type = 'Feature'
-            props = {}
-            props['layerName'] = layerName
-            props['fid'] = feature.id
-            feature.properties = props
-            //copy valid geometry feature
-
-            try {
-                vectorLayer.addData(feature);
-            } catch (error) {
-                continue;
-            }
-        }
+        vectorLayer.addData(geojson)        
         layerObject.label = `<span class="leaflet-layerstree-header-name" id="${layerObject.id}">${layerName}</span>`
         layerObject['layer'] = vectorLayer;
     }
@@ -59,24 +43,12 @@ function addVectorLayer(layerName) {
         categorizedLayers = layerObject.children
 
         categorizedLayers.forEach(obj => {
-            layer = L.geoJSON(null, 
-                {
-                    style: qmlStyler.styles[obj.label],
-                    pointToLayer: function(feature, latlng) {
-                        return createPointLayer(latlng, qmlStyler.markerLayerOptions[obj.label])
-                    },
-                    onEachFeature: function (feature, layer) {
-                        layer.on({
-                            click: showFeatureProperties
-                        });
-                    }
-                });
+            layer = itemLayer(qmlStyler, obj.label)
             obj['layer'] = layer;
 
         });
 
-        for (const feature of iter) {
-            feature.type = 'Feature'
+        geojson.features.forEach((feature) => { 
             categoryValue = feature.properties[propKey];
             //Counter shapefiles 10 character limit on attributes
             if (!categoryValue) {                
@@ -84,20 +56,16 @@ function addVectorLayer(layerName) {
                 categoryValue = feature.properties[propKey];
             }
             
-            index = categorizedLayers.findIndex(obj => obj.label === categoryValue);
-
+            index = categorizedLayers.findIndex(obj => obj.label === `${categoryValue}`);
+            
             if (index !== -1) {
                 layer = categorizedLayers[index]['layer'];
-                props = {}
-                props['layerName'] = layerName
-                props['fid'] = feature.id
-                feature.properties = props
-                //copy valid geometry features
-                if (feature.geometry !== null) {
-                    layer.addData(feature);
-                }
+                feature.properties = {layerName: layerName, fid: feature.id}
+                try {
+                   layer.addData(feature); 
+                } catch (e) {}                               
             }
-        }
+        })
         categorizedLayers.forEach(obj => {
             obj.label = `<span class="leaflet-layerstree-header-name" id="${obj.id}">${obj.label}</span>`
         })        
@@ -108,44 +76,31 @@ function addVectorLayer(layerName) {
         graduatedLayers = layerObject.children
 
         graduatedLayers.forEach(obj => {
-            layer = L.geoJSON(null, 
-                {
-                    style: qmlStyler.styles[obj.label],
-                    pointToLayer: function(feature, latlng) {
-                        return createPointLayer(latlng, qmlStyler.markerLayerOptions[obj.label])
-                    },
-                    onEachFeature: function (feature, layer) {
-                        layer.on({
-                            click: showFeatureProperties
-                        });
-                    }
-                });
+            layer = itemLayer(qmlStyler, obj.label);            
             obj['layer'] = layer          
         });
 
-        for (const feature of iter) {
-            feature.type = 'Feature';
-
-            rangeValue = feature.properties[propKey];
+        geojson.features.forEach((feature) => {
+            let check  = ['toint', 'toreal'].some(word => propKey.startsWith(word));
+            if (check){
+               propKey = propKey.replace(/.*\(|\).*/g, '').trim().replace(/\W/g, '')
+            }
+            rangeValue = parseFloat(feature.properties[propKey]);
             if (!rangeValue) {
                 // If original layer source is from a shapefile, attributes normally are limited to 10 characters
                 propKey = propKey.slice(0, 10)
-                rangeValue = feature.properties[propKey];
-            }
+                rangeValue = parseFloat(feature.properties[propKey]);
+            }            
+            
             index = graduatedLayers.findIndex(v => rangeValue >= v.range[0] && rangeValue <= v.range[1]);
-
             if (index !== -1) {
-                layer = graduatedLayers[index]['layer'];
-                props = {}
-                props['layerName'] = layerName
-                props['fid'] = feature.id
-                feature.properties = props
-                //copy valid geometry features
-                if (feature.geometry !== null) {
-                    layer.addData(feature);
-                }
+                layer = graduatedLayers[index]['layer'];                
+                feature.properties = {layerName: layerName, fid: feature.id} 
+                try {
+                    layer.addData(feature); 
+                } catch (e) {}           
             }
-        }
+        });
 
         graduatedLayers.forEach(obj => {
             obj.label = `<span class="leaflet-layerstree-header-name" id="${obj.id}">${obj.label}</span>`
@@ -153,8 +108,47 @@ function addVectorLayer(layerName) {
     }
 }
 
-function createPointLayer(latlng, markerLayerOptions){
+function itemLayer (qmlStyler, label) {
+    if (typeof label === 'number') {
+        trimmedLabel = label
+    } else {
+        trimmedLabel = label.trim();
+    }
+
+    return L.geoJSON(null, 
+        {
+            style: qmlStyler.styles[trimmedLabel],
+            pointToLayer: function(feature, latlng) {
+                return createPointLayer(latlng, qmlStyler.markerLayerOptions[label])
+            },
+            onEachFeature: function (feature, layer) {
+                layer.on({
+                    click: showFeatureProperties
+                });
+            }
+        }); 
+}
+
+function coordsToLatLng(coords, layerCRS) {
+    var latLng = layerCRS.unproject(L.point(coords[0], coords[1]));
+    return latLng;
+  };
+
+function getUnprojectedJSON(geojson, srs_id) {
+    definition = db.prepare(`select definition from gpkg_spatial_ref_sys where srs_id=${srs_id}`).getAsObject({$srs_id:1}).definition
+    var layerCRS = new L.Proj.CRS('layerCRS', definition)
+    var unprojectedLayer = L.geoJSON(geojson, {
+        coordsToLatLng: function (coords) { 
+            return coordsToLatLng(coords, layerCRS)
+        }
+    });
     
+    transformedBounds.push(unprojectedLayer.getBounds())
+    
+    return unprojectedLayer.toGeoJSON()
+}
+
+function createPointLayer(latlng, markerLayerOptions){    
     if (markerLayerOptions.name === 'circle') {
         return new L.CircleMarker(latlng, {
         	radius: parseFloat(markerLayerOptions.size) / 2, 
@@ -172,8 +166,7 @@ function createPointLayer(latlng, markerLayerOptions){
             opacity: colorAndOpacity(markerLayerOptions.outline_color)[1],
             shape: markerLayerOptions.name
         })
-    }
-    
+    } 
 
 }
 
@@ -189,8 +182,7 @@ function addWMSLayer(layerName) {
 
 }
 
-function getPatternedStyles(patternOptions, styles) {
-    
+function getPatternedStyles(patternOptions, styles) {    
     Object.keys(patternOptions).forEach((key) => {
         patternOption = patternOptions[key];
         if (patternOption.patternType==='LinePatternFill'){
@@ -210,29 +202,11 @@ function getPatternedStyles(patternOptions, styles) {
 
         if (patternOption.patternType === 'PointPatternFill') {
             options = {}
-
-
+            // TODO: Point pattern
         }
-
-
     })
     
 return styles    
-}
-
-function adjustTreeStyle() {
-    //layerControl = L.control.layers.tree({}, layerTree, { collapsed: false, spaceSymbol: "   " }).addTo(map);
-    selectors = [...$('.leaflet-control-layers-selector')]
-    lastchildren = selectors.filter(a => a.className.split(' ').length == 1)
-    lastchildren.map(el => el.parentElement.style.marginLeft = '12px')
-    addPreviewIcons()
-    
-    // $('span.leaflet-layerstree-header-name').filter(function(){
-    //     return $(this).text().trim() === 'GOU Border Zone';
-    // })[0]
-    // var img = $('<img id="dynamic">')
-    // img.attr('src', "data:image/png;base64, " + btoa(String.fromCharCode.apply(null, ba)))
-    // img.prependTo(el)
 }
 
 function addLayerTree() {
@@ -260,9 +234,13 @@ function addPreviewIcons() {
 }
 
 function showFeatureProperties(e) {
+    if (Object.keys(e.target.feature.properties).length === 0) {
+        popupContent = 'No feature attributes stored!'
+        maxStringWidth = 100;
+    } else {
     
     layerName = e.target.feature.properties.layerName
-    _fid = e.target.feature.properties.fid
+    _fid = e.target.feature.properties.fid   
     
     sql = `select * from [${layerName}] where fid = ${_fid}`    
     const {geom, fid, ...obj} = db.prepare(sql).getAsObject($)
@@ -297,6 +275,7 @@ function showFeatureProperties(e) {
     })
         
     popupContent = popupDiv[0].outerHTML
+    } 
     e.target.bindPopup(popupContent, {minWidth: maxStringWidth}).openPopup()    
 }
 
@@ -359,6 +338,37 @@ function colorAndOpacity(colorString) {
 
     hexColor = rgbToHex(...colorArray);
     return [hexColor, opacity]
+}
+
+function getLayerAsGeoJSON(layerName) {
+    sql = `SELECT * FROM [${layerName}]`;
+    
+    let features = []
+    stmt = db.prepare(sql)
+    stmt.bind({$})
+    while(stmt.step()) {        
+        const {fid, geom, ...properties} = stmt.getAsObject();
+        geometry = new GeoPackage.GeometryData(geom).geometry.toGeoJSON();
+        geomEmpty = new GeoPackage.GeometryData(geom).empty;
+        if (!geomEmpty) {
+            feature = {type: "Feature", properties: properties, id: fid, geometry: geometry}
+            features.push(feature)
+        }
+      }
+
+    return {type: "FeatureCollection", features: features}
+}
+
+async function getQGISProject() {
+    stmt = db.prepare("SELECT content FROM qgis_projects")
+    hexstring = stmt.getAsObject({$content:1}).content;
+    bytes = new Uint8Array(hexstring.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+    const reader = new zip.Uint8ArrayReader(bytes)
+    const zipReader = new zip.ZipReader(reader);
+    const entries = await zipReader.getEntries();
+    const data = await entries[0].getData(new zip.TextWriter());
+    qgsDocumentObject = xmlToJSON.parseString(data)
+    return qgsDocumentObject
 }
 
 class styleQMLParser {
@@ -592,68 +602,4 @@ class styleQMLParser {
             return acc;
         }, {});
     }
-}
-
-function getGeoJSON(layerName) {
-    data = db.exec(`select * from [${layerName}] where not st_isempty(geom)`)[0];
-    features = data.values.map((row) => {
-        geomIndex = data.columns.indexOf('geom')
-        idIndex = data.columns.indexOf('fid')
-       
-        buffer = row[geomIndex]
-        geometry = new GeoPackage.GeometryData(buffer).geometry.toGeoJSON()
-        id = row[idIndex]
-
-        properties =  data.columns.reduce((acc, col, index) => {            
-            if (col !== 'geom') {
-                 acc[col] = row[index]
-            }            
-            return acc
-        }, {})
-        return {type: "Feature", properties: properties, id: id, geometry: geometry}
-
-    })
-
-    return {type: "FeatureCollection", features: features}
-}
-
-function getLayerAsGeoJSON(layerName, skipEmptyGeometry=false) {
-    sql = `SELECT * FROM [${layerName}]`;
-    
-    if (skipEmptyGeometry){
-        sql = `SELECT * FROM [${layerName}] where not st_isempty(geom)` 
-    }
-
-    let features = []
-    stmt = db.prepare(sql)
-    stmt.bind({$})
-    while(stmt.step()) {        
-        const {fid, geom, ...properties} = stmt.getAsObject();
-        geometry = new GeoPackage.GeometryData(geom).geometry.toGeoJSON();
-        feature = {type: "Feature", properties: properties, id: fid, geometry: geometry}
-        features.push(feature)
-      }
-
-    return {type: "FeatureCollection", features: features}
-}
-
-function hexToBytes(hex) {
-    for (var bytes = [], c = 0; c < hex.length; c += 2)
-        bytes.push(parseInt(hex.substr(c, 2), 16));
-    return bytes;
-}
-const fromHexString = hexString =>
-  new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-
-
-async function getQGISProject() {
-    stmt = db.prepare("SELECT content FROM qgis_projects")
-    hexstring = stmt.getAsObject({$content:1}).content;
-    bytes = new Uint8Array(hexstring.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-    const reader = new zip.Uint8ArrayReader(bytes)
-    const zipReader = new zip.ZipReader(reader);
-    const entries = await zipReader.getEntries();
-    const data = await entries[0].getData(new zip.TextWriter());
-    qgsDocumentObject = xmlToJSON.parseString(data)
-    return qgsDocumentObject
 }
