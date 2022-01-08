@@ -33,7 +33,10 @@ function addVectorLayer(layerName) {
    
     if (layerObject.renderType == 'singleSymbol') {
         var vectorLayer = itemLayer(qmlStyler, 0)
-        
+        geojson.features = geojson.features.map(feature => {
+            feature.properties = {layerName: layerName, fid: feature.id};
+            return feature
+        });
         vectorLayer.addData(geojson)        
         layerObject.label = `<span class="leaflet-layerstree-header-name" id="${layerObject.id}">${layerName}</span>`
         layerObject['layer'] = vectorLayer;
