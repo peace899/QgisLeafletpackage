@@ -59,8 +59,7 @@ function addVectorLayer(layerName) {
                 categoryValue = feature.properties[propKey];
             }
             
-            index = categorizedLayers.findIndex(obj => obj.label === `${categoryValue}`);
-            
+            index = categorizedLayers.findIndex(obj => obj.label === `${categoryValue}`);            
             if (index !== -1) {
                 layer = categorizedLayers[index]['layer'];
                 feature.properties = {layerName: layerName, fid: feature.id}
